@@ -1,0 +1,173 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+
+  This stack sends health related notifications to the slack channel associated with this account
+
+Parameters:
+
+  HookURL:
+    Type: String
+    Description: 'Please enter the web hook url from Slack:'
+    Default: ""
+
+Resources:
+
+  LambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+  LambdaRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LambdaPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowAlias
+          Action:
+          - iam:ListAccountAliases
+          Effect: Allow
+          Resource: '*'
+        - Sid: AllowEvents
+          Action:
+          - events:PutEvents
+          Effect: Allow
+          Resource: '*'       
+        - Sid: AllowLogs
+          Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Effect: Allow
+          Resource: arn:aws:logs:*:*:*
+      Roles:
+      - Ref: LambdaFunctionRole
+
+  HealthNotifierLambdaFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+        - LambdaFunctionRole
+        - Arn
+      Code: 
+        ZipFile: |
+          import boto3 
+          import json 
+          import logging 
+          import os 
+          from urllib.request import Request, urlopen
+          from urllib.error import URLError, HTTPError
+
+          # Setting up logging 
+          logger = logging.getLogger() 
+          logger.setLevel(logging.INFO) 
+          
+          iam_client = boto3.client('iam')          
+          account_alias = iam_client.list_account_aliases()['AccountAliases'][0].title()
+          channel="#aws-health"
+          
+          hookUrl = os.environ['ev_hookurl']
+
+          # main function 
+          def handler(event, context): 
+             logger.info(json.dumps(event)) 
+
+             message =  str(event['detail']['eventDescription'][0]['latestDescription']  + "\n\n<https://phd.aws.amazon.com/phd/home?region=us-east-1#/event-log?eventID=" + event['detail']['eventArn'] + "|Click here> for details.") 
+
+             service = event['detail']['service']
+             account = event['account']
+
+             event_type_code = event['detail']['eventTypeCode']
+             if event_type_code == 'AWS_EC2_PERSISTENT_INSTANCE_RETIREMENT_SCHEDULED':
+                event_type_code = 'Retirement Notice'
+             else:
+                event_type_code = 'Maintenance Notice'
+
+             json.dumps(message) 
+
+             slack_message = {
+                 "channel": channel,
+                 "attachments": [
+                   {
+                     "fallback": "AWS Event Notification",
+                     "color": "#36a64f",
+                     "pretext": "AWS Event Notification",
+                     "title": "{} ({}) - {} - {}".format(AWS_ACCOUNT_ALIAS, account, event_type_code, service),
+                     "title_link": "https://api.slack.com/",
+                     "text": message,
+                     "fields": [
+                       {
+                         "title": "Event",
+                         "value": event_type_code,
+                         "short": False
+                       },
+                       {
+                         "title": "Service",
+                         "value": service,
+                         "short": False
+                       },
+                       {
+                         "title": "Detail",
+                         "value": "<https://phd.aws.amazon.com/phd/home?region=us-east-1#/event-log?eventID=" + event['detail']['eventArn'] + "|{}>".format(event['detail']['eventArn']),
+                         "short": False
+                       }
+                     ]
+                  }
+                 ]
+             }
+
+             req = Request(hookUrl, json.dumps(slack_message).encode("utf8")) 
+
+             try: 
+                response = urlopen(req) 
+                response.read() 
+                logger.info("Message posted") 
+             except HTTPError as e: 
+                logger.error("Request failed : %d %s", e.code, e.reason) 
+             except URLError as e: 
+                logger.error("Server connection failed: %s", e.reason) 
+      Runtime: python3.6
+      Timeout: '20'
+      Environment:
+        Variables:
+          ev_hookurl: !Ref HookURL
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::GetAtt:
+        - HealthNotifierLambdaFn
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+        - CloudWatchEventRule
+        - Arn
+
+  CloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        source:
+        - aws.health
+      State: ENABLED
+      Targets:
+      - Arn:
+          Fn::GetAtt:
+          - HealthNotifierLambdaFn
+          - Arn
+        Id: HealthNotifierLambdaFn
