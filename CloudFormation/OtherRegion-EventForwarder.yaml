@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+
+  This stack deploys cloudwatch rules that forward events back to Shared Services
+
+Resources:
+  EventConvoyTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+       - Endpoint: !Join [ '', [ 'arn:aws:lambda:us-west-2:', !Ref 'AWS::AccountId', ':function:SharedServices-Event-Listener']]
+         Protocol: "lambda"
+      DisplayName: "sharedservices-event-convoy"
+      TopicName: "sharedservices-event-convoy"
+  EventConvoyPolicy:
+    Type: "AWS::SNS::TopicPolicy"
+    Properties:
+      PolicyDocument:
+        Id: EventConvoyPolicy
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowPublishEvents
+          Effect: Allow
+          Principal:
+            Service: "events.amazonaws.com"
+          Action: 
+           - 'sns:Publish'
+          Resource: !Ref 'EventConvoyTopic'
+        - Sid: AllowSharedServices
+          Effect: Allow
+          Principal:
+            AWS: !Ref 'AWS::AccountId'
+          Action: 
+           - 'sns:Subscribe'
+           - 'sns:ListSubscriptionsByTopic'
+           - 'sns:Receive'
+          Resource: "*"
+      Topics:
+        - !Ref 'EventConvoyTopic'
+  CloudWatchEventRule1:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Majority Events for Event-Handler
+      EventPattern:
+        source:
+          - aws.autoscaling
+          - aws.ec2
+      State: ENABLED
+      Targets:
+      - Arn: !Ref 'EventConvoyTopic'
+        Id: EventTopic
