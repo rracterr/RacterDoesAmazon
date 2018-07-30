@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+
+  This stack sends messaging events to slack
+
+Parameters:
+
+  HookURL:
+    Type: String
+    Description: 'Please enter the web hook url from Slack:'
+    Default: ""
+
+Resources:
+
+  LambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+  LambdaRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LambdaPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowAlias
+          Action:
+          - iam:ListAccountAliases
+          Effect: Allow
+          Resource: '*'
+        - Sid: Allowlogevents
+          Action:
+          - logs:PutLogEvents
+          Effect: Allow
+          Resource: '*'          
+        - Sid: AllowLogs
+          Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          Effect: Allow
+          Resource: arn:aws:logs:*:*:*
+        - Sid: AllowS3Access
+          Action:
+          - s3:Get*
+          - s3:List*
+          Effect: Allow
+          Resource: 
+          - arn:aws:s3:::aws-account-info/aws-accounts.json
+      Roles:
+      - Ref: LambdaFunctionRole
+
+  SlackerLambdaFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SharedServices-Slacker
+      Handler: index.lambda_handler
+      Role:
+        Fn::GetAtt:
+        - LambdaFunctionRole
+        - Arn
+      Code: 
+        ZipFile: |
+            import boto3 
+            import json 
+            import logging 
+            import os 
+            from pprint import pprint            
+            from urllib.request import Request, urlopen
+            from urllib.error import URLError, HTTPError
+
+            # Setting up logging    
+            logger = logging.getLogger() 
+            logger.setLevel(logging.INFO) 
+            
+            hookUrl = os.environ['ev_hookurl']
+
+            def slacker(channel, color, accountname, region, severity, title, text, footer, fields):
+               print("sending message...")
+               slack_message = {
+                   "channel": channel,
+                   "attachments": [
+                     {
+                       "fallback": "{} - {}".format(title, text),
+                       "color": color,
+                       "pretext": "Event Notification",
+                       "title": "{} - {} - {} - {}".format(accountname, region, severity, title),
+                       "text": text,
+                       "footer": footer
+                     }
+                   ]
+                 }
+     
+               req = Request(hookUrl, json.dumps(slack_message).encode("utf8")) 
+
+               try: 
+                  response = urlopen(req) 
+                  response.read() 
+                  logger.info("Message posted") 
+               except HTTPError as e: 
+                  logger.error("Request failed : %d %s", e.code, e.reason) 
+               except URLError as e: 
+                  logger.error("Server connection failed: %s", e.reason) 
+
+            # main function 
+            def lambda_handler(event, context):
+               channels = []
+   
+               accountname =  str(event['detail']['accountname'])
+               severity =  str(event['detail']['severity'] )
+               title =  str(event['detail']['title'] )
+               text =  str(event['detail']['text'])
+
+               if 'region' in event['detail']:
+                  region = str(event['detail']['region'])
+               else:
+                  region = str(event['region'])
+
+               footer = "Slacker"
+      
+               home_channel="#{}".format(accountname)
+
+               color = "#36a64f"
+               channels.append(home_channel)
+          
+               for channel in channels:
+                   slacker(channel, color, accountname, region, severity, title, text, footer, fields)            
+      Runtime: python3.6
+      Timeout: '20'
+      Environment:
+        Variables:
+          ev_hookurl: !Ref HookURL
+
+  LambdaInvokePermission1:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::GetAtt:
+        - SlackerLambdaFn
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+        - CloudWatchEventRule1
+        - Arn
+  LambdaInvokePermission2:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::GetAtt:
+        - SlackerLambdaFn
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+        - CloudWatchEventRule2
+        - Arn
+  CloudWatchEventRule1:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        source:
+        - forward.com.move.slacker
+        detail-type: 
+        - "slacker"        
+      State: ENABLED
+      Targets:
+      - Arn:
+          Fn::GetAtt:
+          - SlackerLambdaFn
+          - Arn
+        Id: SlackerLambdaFn
+  CloudWatchEventRule2:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        source:
+        - com.move.slacker
+        detail-type: 
+        - "slacker"        
+      State: ENABLED
+      Targets:
+      - Arn:
+          Fn::GetAtt:
+          - SlackerLambdaFn
+          - Arn
+        Id: SlackerLambdaFn
