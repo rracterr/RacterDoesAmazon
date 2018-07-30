@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+
+  This stack listens to SNS in other regions, and echos their messages to the event bus
+  
+Resources:
+    LambdaFunctionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    - Effect: Allow
+                      Principal:
+                          Service:
+                            - lambda.amazonaws.com
+                      Action:
+                            - sts:AssumeRole
+            Path: "/"
+    LambdaRolePolicies:
+        Type: AWS::IAM::Policy
+        Properties:
+            PolicyName: LambdaPolicy
+            PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Sid: AllowAlias
+                  Action:
+                  - iam:ListAccountAliases
+                  Effect: Allow
+                  Resource: '*'
+                - Sid: AllowCWE
+                  Action:
+                  - events:PutEvents
+                  Effect: Allow
+                  Resource: '*'          
+                - Sid: Allowlogevents
+                  Action:
+                  - logs:PutLogEvents
+                  Effect: Allow
+                  Resource: '*'          
+                - Sid: AllowLogs
+                  Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  Effect: Allow
+                  Resource: arn:aws:logs:*:*:*
+                - Sid: AllowXRay
+                  Action:
+                  - xray:PutTelemetryRecords
+                  - xray:PutTraceSegments
+                  Effect: Allow
+                  Resource: '*'          
+            Roles:
+              - Ref: LambdaFunctionRole
+
+    ListenerLambdaFn:
+        Type: AWS::Lambda::Function
+        Properties:
+          FunctionName: SameRegion-EventListener
+          Handler: index.lambda_handler
+          Role:
+            Fn::GetAtt:
+            - LambdaFunctionRole
+            - Arn
+          Code: 
+            ZipFile: |
+                import boto3
+                import json
+                from pprint import pprint
+
+                events_client = boto3.client('events')    
+
+                def lambda_handler(event, context):
+                    records = event['Records']
+                    pprint(records)
+
+                    for record in records:
+                        payload = json.loads(record['Sns']['Message'])
+
+                        payload['Source'] = "{}.{}".format("forward",payload['source'])
+                        del payload['source']
+
+                        payload['DetailType'] = payload['detail-type']
+                        del payload['detail-type']
+
+                        payload['detail']['region']=payload['region']
+                        payload['Detail'] = json.dumps(payload['detail']).replace('"', '\"')
+                        del payload['detail']
+
+                        payload['Resources'] = payload['resources']
+                        del payload['resources']
+                        del payload['account']
+                        del payload['region']
+                        del payload['version']
+                        del payload['id']
+                        del payload['time']
+
+                        list_of_payload = []
+                        list_of_payload.append(payload)
+                        response = events_client.put_events(Entries=list_of_payload)
+        
+                        if 'FailedEntryCount' in response:
+                            print("FailedEntryCount: {}".format(response['FailedEntryCount']))
+                            for error in response['Entries']:
+                                pprint(error)
+          Runtime: python3.6
+          Timeout: '20'
+    LambdaEast1InvokePermission:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName:
+                Fn::GetAtt:
+                - ListenerLambdaFn
+                - Arn
+            Action: lambda:InvokeFunction
+            Principal: sns.amazonaws.com
+            SourceArn: !Join [ '', [ 'arn:aws:sns:us-east-1:', !Ref 'AWS::AccountId', ':cloudservices-event-convoy']]
+    LambdaEast2InvokePermission:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName:
+              Fn::GetAtt:
+              - ListenerLambdaFn
+              - Arn
+            Action: lambda:InvokeFunction
+            Principal: sns.amazonaws.com
+            SourceArn: !Join [ '', [ 'arn:aws:sns:us-east-2:', !Ref 'AWS::AccountId', ':cloudservices-event-convoy']]
+    OREventRule1:
+        Type: AWS::Events::Rule
+        Properties:
+          Description:  Majority Events for Event-Handler
+          EventPattern:
+            source:
+              - aws.autoscaling
+              - aws.ec2
+          State: ENABLED
+          Targets:
+            - 
+                Arn: 
+                    Fn::GetAtt: 
+                        - "ListenerLambdaFn"
+                        - "Arn"
+                Id: EventLambda

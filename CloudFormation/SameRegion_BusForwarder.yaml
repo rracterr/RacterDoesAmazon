@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+
+  This stack deploys cloudwatch rules that forward slacker events back to move_prod
+
+Resources:
+  SlackerEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        source:
+          - com.move.slacker
+          - aws.autoscaling
+          - aws.codedeploy
+          - aws.codepipeline
+          - aws.ec2
+          - aws.glue
+          - aws.health
+          - aws.signin
+          - aws.sts
+          - aws.trustedadvisor
+          - aws.logs
+          - forward.com.move.slacker
+          - forward.aws.autoscaling
+          - forward.aws.codedeploy
+          - forward.aws.codepipeline
+          - forward.aws.ec2
+          - forward.aws.glue
+          - forward.aws.health
+          - forward.aws.signin
+          - forward.aws.sts
+          - forward.aws.trustedadvisor
+          - forward.aws.logs
+      State: ENABLED
+      Targets:
+      - Arn: arn:aws:events:us-west-2:860429940966:event-bus/default
+        Id: MoveProd1
